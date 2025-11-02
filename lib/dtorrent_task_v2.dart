@@ -1,4 +1,4 @@
-library dtorrent_task;
+library dtorrent_task_v2;
 
 import 'dart:io';
 
@@ -31,3 +31,4 @@ Future<String?> getTorrentTaskVersion() async {
   }
   return null;
 }
+

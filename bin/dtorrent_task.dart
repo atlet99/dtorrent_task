@@ -2,7 +2,7 @@ import 'dart:io';
 
 import 'package:args/args.dart';
 import 'package:dtorrent_parser/dtorrent_parser.dart';
-import 'package:dtorrent_task_v2/dtorrent_task.dart';
+import 'package:dtorrent_task_v2/dtorrent_task_v2.dart';
 import 'package:logging/logging.dart';
 
 void main(List<String> mainArgs) async {

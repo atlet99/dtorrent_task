@@ -5,7 +5,7 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:b_encode_decode/b_encode_decode.dart';
 import 'package:dtorrent_common/dtorrent_common.dart';
-import 'package:dtorrent_task_v2/dtorrent_task.dart';
+import 'package:dtorrent_task_v2/dtorrent_task_v2.dart';
 import 'package:dtorrent_task_v2/src/peer/protocol/peer_events.dart';
 import 'package:events_emitter2/events_emitter2.dart';
 import 'package:logging/logging.dart';

@@ -7,7 +7,7 @@ import 'dart:typed_data';
 import 'package:dtorrent_common/dtorrent_common.dart';
 import 'package:test/test.dart';
 import 'package:dtorrent_parser/dtorrent_parser.dart';
-import 'package:dtorrent_task_v2/dtorrent_task.dart';
+import 'package:dtorrent_task_v2/dtorrent_task_v2.dart';
 import 'package:path/path.dart' as path;
 
 final testDirectory = path.join(

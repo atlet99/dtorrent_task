@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 
-import 'package:dtorrent_task_v2/dtorrent_task.dart';
+import 'package:dtorrent_task_v2/dtorrent_task_v2.dart';
 
 abstract class PeerEvent {}
 
