@@ -1,7 +1,7 @@
 ## About
 Dart library for implementing BitTorrent client. 
 
-Whole Dart Torrent client contains serival parts :
+Whole Dart Torrent client contains several parts :
 - [Bencode](https://pub.dev/packages/b_encode_decode) 
 - [Tracker](https://pub.dev/packages/dtorrent_tracker)
 - [DHT](https://pub.dev/packages/bittorrent_dht)
@@ -29,11 +29,11 @@ Other support will come soon.
 
 ## How to use
 
-This package need to dependency [`dtorrent_parser`](https://pub.dev/packages/dtorrent_parser):
-```
+This package requires dependency [`dtorrent_parser`](https://pub.dev/packages/dtorrent_parser):
+```yaml
 dependencies:
-  dtorrent_parser : ^1.0.4
-  dtorrent_task : '>= 0.2.1 < 2.0.0'
+  dtorrent_parser: ^1.0.8
+  dtorrent_task: ^0.4.1
 ```
 
 First , create a `Torrent` model via .torrent file:
@@ -44,21 +44,30 @@ First , create a `Torrent` model via .torrent file:
 
 Second, create a `Torrent Task` and start it:
 ```dart
-  var task = TorrentTask.newTask(model,'savepath');
-  task.start();
+  var task = TorrentTask.newTask(model, 'savepath');
+  await task.start();
 ```
 
-User can add some listener to monitor `TorrentTask` running:
+User can add event listeners to monitor `TorrentTask` running:
 ```dart
-  task.onTaskComplete(() => .....);
-  task.onFileComplete((String filePath) => .....);
+  EventsListener<TaskEvent> listener = task.createListener();
+  listener
+    ..on<TaskCompleted>((event) {
+      print('Download completed!');
+    })
+    ..on<TaskFileCompleted>((event) {
+      print('File completed: ${event.file.originalFileName}');
+    })
+    ..on<TaskStopped>((event) {
+      print('Task stopped');
+    });
 ```
 
-and there is some method to control the `TorrentTask`:
+And there are methods to control the `TorrentTask`:
 
 ```dart
    // Stop task:
-   task.stop();
+   await task.stop();
    // Pause task:
    task.pause();
    // Resume task:
