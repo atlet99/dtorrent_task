@@ -18,7 +18,6 @@ import 'package:dtorrent_tracker/dtorrent_tracker.dart';
 import 'package:dtorrent_common/dtorrent_common.dart';
 import 'package:bittorrent_dht/bittorrent_dht.dart';
 import 'package:logging/logging.dart';
-import 'package:utp_protocol/utp_protocol.dart';
 import 'package:events_emitter2/events_emitter2.dart';
 import 'file/download_file_manager.dart';
 import 'file/state_file.dart';
@@ -371,25 +370,6 @@ class _TorrentTask
     if (infoHash == _infoHashString) {
       _processNewPeerFound(peer, PeerSource.dht);
     }
-  }
-
-  void _hookUTP(UTPSocket socket) {
-    if (socket.remoteAddress == LOCAL_ADDRESS) {
-      socket.close();
-      return;
-    }
-    if (_comingIp.length >= MAX_IN_PEERS || !_comingIp.add(socket.address)) {
-      socket.close();
-      return;
-    }
-    _log.info(
-      'incoming connect: ${socket.remoteAddress.address}:${socket.remotePort}',
-    );
-    _peersManager?.addNewPeerAddress(
-        CompactAddress(socket.remoteAddress, socket.remotePort),
-        PeerSource.incoming,
-        type: PeerType.UTP,
-        socket: socket);
   }
 
   void _hookInPeer(Socket socket) {

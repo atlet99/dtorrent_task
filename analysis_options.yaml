@@ -12,11 +12,13 @@
 # The core lints are also what is used by pub.dev for scoring packages.
 
 include: package:lints/recommended.yaml
-# Uncomment the following section to specify additional rules.
 
-# linter:
-#   rules:
-#     - camel_case_types
+linter:
+  rules:
+    # Disable constant identifier names check
+    constant_identifier_names: false
+    non_constant_identifier_names: false
+    camel_case_types: true
 
 # analyzer:
 #   exclude:
