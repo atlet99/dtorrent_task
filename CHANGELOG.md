@@ -67,3 +67,11 @@
 - optimizing
 - fix memory leaks
 - some refactoring and cleanup
+
+## 0.4.1
+- update dependencies to latest compatible versions
+- upgrade SDK constraint to >=3.0.0
+- fix dead code warnings in examples
+- remove unused code (_hookUTP method, unused imports)
+- fix TCPConnectException to properly use exception field
+- update analysis options to disable constant naming checks

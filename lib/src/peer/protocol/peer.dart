@@ -1236,6 +1236,9 @@ class BadException implements Exception {
 class TCPConnectException implements Exception {
   final Exception _e;
   TCPConnectException(this._e);
+  
+  @override
+  String toString() => _e.toString();
 }
 
 class _TCPPeer extends Peer {
