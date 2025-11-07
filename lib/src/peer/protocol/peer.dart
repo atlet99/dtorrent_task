@@ -526,40 +526,53 @@ abstract class Peer
             // the id is a single byte
             var id = _cacheBuffer[start + MESSAGE_INTEGER];
 
+            // Messages without payload (choke, unchoke, interested, not interested) have length = 1
+            // Messages with payload have length > 1
             // Validate message buffer size before creating
-            if (length - 1 <= 0) {
+            if (length < 1) {
               _log.warning(
-                  'Invalid message buffer size: length=$length, peer=$address');
+                  'Invalid message length: length=$length, peer=$address');
               break;
             }
 
-            // Validate bounds before setRange for message buffer
-            var messageStart = start + MESSAGE_INTEGER + 1;
-            var messageEnd = messageStart + (length - 1);
-            if (messageEnd > _cacheBuffer.length) {
-              _log.warning(
-                  'Message buffer bounds exceeded: messageEnd=$messageEnd, bufferLength=${_cacheBuffer.length}, length=$length, start=$start, peer=$address');
-              break;
+            // For messages with payload (length > 1), validate bounds
+            Uint8List? messageBuffer;
+            if (length > 1) {
+              // Validate bounds before setRange for message buffer
+              var messageStart = start + MESSAGE_INTEGER + 1;
+              var messageEnd = messageStart + (length - 1);
+              if (messageEnd > _cacheBuffer.length) {
+                _log.warning(
+                    'Message buffer bounds exceeded: messageEnd=$messageEnd, bufferLength=${_cacheBuffer.length}, length=$length, start=$start, peer=$address');
+                break;
+              }
+
+              // the message type id is not needed anymore
+              messageBuffer = Uint8List(length - 1);
+
+              messageBuffer.setRange(
+                0,
+                messageBuffer.length,
+                _cacheBuffer,
+                messageStart,
+              );
+            } else {
+              // Message without payload (length = 1), messageBuffer is null
+              messageBuffer = null;
             }
-
-            // the message type id is not needed anymore
-            var messageBuffer = Uint8List(length - 1);
-
-            messageBuffer.setRange(
-              0,
-              messageBuffer.length,
-              _cacheBuffer,
-              messageStart,
-            );
 
             switch (id) {
               case ID_PIECE:
-                piecesMessage ??= <Uint8List>[];
-                piecesMessage.add(messageBuffer);
+                if (messageBuffer != null) {
+                  piecesMessage ??= <Uint8List>[];
+                  piecesMessage.add(messageBuffer);
+                }
                 break;
               case ID_HAVE:
-                haveMessages ??= <Uint8List>[];
-                haveMessages.add(messageBuffer);
+                if (messageBuffer != null) {
+                  haveMessages ??= <Uint8List>[];
+                  haveMessages.add(messageBuffer);
+                }
                 break;
               default:
                 Timer.run(() => _processMessage(id, messageBuffer));
@@ -1238,8 +1251,16 @@ abstract class Peer
       } else {
         sendMessage(ID_BITFIELD, bitfield.buffer);
       }
-    } else if (bitfield.haveCompletePiece()) {
-      sendMessage(ID_BITFIELD, bitfield.buffer);
+    } else {
+      // According to BEP 0003, bitfield is optional if we have no pieces
+      // But we should send it if we have any pieces, or if we want to indicate we have none
+      // For compatibility, always send bitfield if we have any pieces
+      if (bitfield.haveCompletePiece()) {
+        sendMessage(ID_BITFIELD, bitfield.buffer);
+      }
+      // If we have no pieces, we don't send bitfield (this is allowed by BEP 0003)
+      // But peers may not be interested in us if we don't send bitfield
+      // So we should still send interested to them if they have pieces we need
     }
   }
 

@@ -70,6 +70,19 @@ void main() {
         PeerSource.manual,
       );
 
+      // Set remote bitfield to indicate peer has all pieces
+      for (var i = 0; i < pieceManager.length; i++) {
+        peer.updateRemoteBitfield(i, true);
+      }
+
+      // Add peer to available peers for all pieces
+      for (var i = 0; i < pieceManager.length; i++) {
+        final piece = pieceManager[i];
+        if (piece != null) {
+          piece.addAvailablePeer(peer);
+        }
+      }
+
       final selectedPiece = pieceManager.selectPiece(peer, pieceManager, null);
       expect(selectedPiece, isNotNull);
       expect(pieceManager.downloadingPieces.contains(selectedPiece!.index),
@@ -105,10 +118,18 @@ void main() {
       final piece = pieceManager[pieceIndex]!;
 
       expect(piece.flushed, isFalse);
+      expect(piece.isCompletelyWritten, isFalse);
+
+      // Initialize piece and add some data before marking as write complete
+      piece.init();
+      // Add some sub-pieces to memory to simulate download
+      piece.subPieceReceived(0, List<int>.generate(16384, (i) => i % 256));
 
       pieceManager.processPieceWriteComplete(pieceIndex);
 
-      expect(piece.flushed, isTrue);
+      // writeComplete() moves sub-pieces from memory to disk, but doesn't set flushed
+      // Check that piece is marked as completely written instead
+      expect(piece.isCompletelyWritten, isTrue);
     });
 
     test('should dispose correctly', () {

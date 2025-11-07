@@ -19,7 +19,7 @@ import '../peer/extensions/holepunch.dart';
 import '../peer/extensions/pex.dart';
 import '../utils.dart';
 import 'metadata_messenger.dart';
-import 'magnet_parser.dart';
+import 'magnet_parser.dart' show MagnetParser, TrackerTier;
 
 /// Logger instance for MetadataDownloader
 final _log = Logger('MetadataDownloader');
@@ -105,20 +105,97 @@ class MetadataDownloader
   /// List of completed piece indices
   final List<int> _completedPieces = [];
 
-  /// Map of request timeouts by peer ID
+  /// Map of request timeouts by peer ID and piece index
+  /// Key format: '${peerId}_$piece'
   final Map<String, Timer> _requestTimeout = {};
 
   /// Trackers from magnet link (if created from magnet URI)
   final List<Uri> _magnetTrackers = [];
 
+  /// Tracker tiers from magnet link (BEP 0012)
+  final List<TrackerTier> _magnetTrackerTiers = [];
+
+  /// Whether this is a private torrent (BEP 0027)
+  bool _isPrivate = false;
+
+  /// Tracker client for announcing to trackers
+  TorrentAnnounceTracker? _tracker;
+
+  /// Tracker event listener
+  EventsListener? _trackerListener;
+
+  /// Maximum number of retry attempts for metadata download
+  static const int _maxRetryAttempts = 3;
+
+  /// Current retry attempt count
+  int _retryAttempt = 0;
+
+  /// Cache directory for metadata files
+  static String? _cacheDirectory;
+
+  /// Set cache directory for metadata files
+  static void setCacheDirectory(String? directory) {
+    _cacheDirectory = directory;
+  }
+
+  /// Get cache directory (defaults to system temp + metadata_cache)
+  static Future<String> _getCacheDirectory() async {
+    if (_cacheDirectory != null) {
+      return _cacheDirectory!;
+    }
+    final tempDir = Directory.systemTemp;
+    final cacheDir = Directory('${tempDir.path}/metadata_cache');
+    if (!await cacheDir.exists()) {
+      await cacheDir.create(recursive: true);
+    }
+    return cacheDir.path;
+  }
+
+  /// Load metadata from cache if available
+  static Future<Uint8List?> loadFromCache(String infoHashString) async {
+    try {
+      final cacheDir = await _getCacheDirectory();
+      final cacheFile = File('$cacheDir/$infoHashString.torrent');
+      if (await cacheFile.exists()) {
+        _log.info('Loading metadata from cache: $infoHashString');
+        return await cacheFile.readAsBytes();
+      }
+    } catch (e) {
+      _log.warning('Failed to load metadata from cache', e);
+    }
+    return null;
+  }
+
+  /// Save metadata to cache
+  Future<void> _saveToCache(Uint8List metadataBytes) async {
+    try {
+      final cacheDir = await _getCacheDirectory();
+      final cacheFile = File('$cacheDir/$_infoHashString.torrent');
+      await cacheFile.writeAsBytes(metadataBytes);
+      _log.info('Metadata saved to cache: $_infoHashString');
+    } catch (e) {
+      _log.warning('Failed to save metadata to cache', e);
+    }
+  }
+
   /// Creates a new metadata downloader for the given info hash
-  MetadataDownloader(this._infoHashString, {List<Uri>? trackers}) {
+  MetadataDownloader(this._infoHashString,
+      {List<Uri>? trackers, List<TrackerTier>? trackerTiers}) {
     _localPeerId = generatePeerId();
     _infoHashBuffer = hexString2Buffer(_infoHashString)!;
     assert(_infoHashBuffer.isNotEmpty && _infoHashBuffer.length == 20,
         'Info Hash String is incorrect');
     if (trackers != null) {
       _magnetTrackers.addAll(trackers);
+    }
+    if (trackerTiers != null) {
+      _magnetTrackerTiers.addAll(trackerTiers);
+      // Also populate flat list from tiers if not already set
+      if (_magnetTrackers.isEmpty) {
+        for (var tier in trackerTiers) {
+          _magnetTrackers.addAll(tier.trackers);
+        }
+      }
     }
     _init();
     _log.info('Created MetadataDownloader for hash: $_infoHashString');
@@ -139,6 +216,7 @@ class MetadataDownloader
     return MetadataDownloader(
       magnet.infoHashString,
       trackers: magnet.trackers,
+      trackerTiers: magnet.trackerTiers,
     );
   }
   Future<void> _init() async {
@@ -152,35 +230,91 @@ class MetadataDownloader
 
   Future<void> startDownload() async {
     if (_running) return;
+
+    // Check cache first
+    final cachedMetadata = await loadFromCache(_infoHashString);
+    if (cachedMetadata != null) {
+      _log.info('Using cached metadata for $_infoHashString');
+      events.emit(MetaDataDownloadComplete(cachedMetadata));
+      return;
+    }
+
     _running = true;
 
-    // Add trackers from magnet link if available
+    // Initialize tracker client if we have trackers from magnet link
     if (_magnetTrackers.isNotEmpty) {
       _log.info('Using ${_magnetTrackers.length} trackers from magnet link');
-      for (final trackerUri in _magnetTrackers) {
-        try {
-          // Announce to tracker to get peers
-          // Note: This is a simplified approach - in production you might want
-          // to use a proper tracker client
-          _log.fine('Adding tracker from magnet: $trackerUri');
-          // Trackers will be used when peers are discovered
-        } catch (e) {
-          _log.warning('Failed to process tracker from magnet: $trackerUri', e);
+      try {
+        _tracker ??= TorrentAnnounceTracker(this);
+        _trackerListener ??= _tracker!.createListener();
+
+        // Listen for peers from tracker
+        _trackerListener!.on<AnnouncePeerEventEvent>((event) {
+          if (event.event != null) {
+            final peers = event.event!.peers;
+            _log.info('Got ${peers.length} peer(s) from tracker');
+            for (var peer in peers) {
+              addNewPeerAddress(peer, PeerSource.tracker);
+            }
+          }
+        });
+
+        // Announce to trackers from magnet link
+        // Use tiers if available (BEP 0012), otherwise use flat list
+        final infoHashBuffer = Uint8List.fromList(_infoHashBuffer);
+
+        if (_magnetTrackerTiers.isNotEmpty) {
+          // Announce to trackers tier by tier (try first tier, then next, etc.)
+          for (var tier in _magnetTrackerTiers) {
+            _log.info(
+                'Announcing to tier with ${tier.trackers.length} tracker(s)');
+            for (var trackerUri in tier.trackers) {
+              try {
+                _tracker!.runTracker(trackerUri, infoHashBuffer);
+                _log.info('Announced to tracker: $trackerUri');
+              } catch (e) {
+                _log.warning('Failed to announce to tracker: $trackerUri', e);
+              }
+            }
+          }
+        } else {
+          // Fallback to flat list
+          for (var trackerUri in _magnetTrackers) {
+            try {
+              _tracker!.runTracker(trackerUri, infoHashBuffer);
+              _log.info('Announced to tracker: $trackerUri');
+            } catch (e) {
+              _log.warning('Failed to announce to tracker: $trackerUri', e);
+            }
+          }
         }
+      } catch (e) {
+        _log.warning('Failed to initialize tracker client', e);
       }
     }
 
+    // Only use DHT if not a private torrent (BEP 0027)
+    // Note: We don't know if it's private yet, but we'll check during handshake
     var dhtListener = _dht.createListener();
     dhtListener.on<NewPeerEvent>(_processDHTPeer);
     var port = await _dht.bootstrap();
-    if (port != null) {
+    if (port != null && !_isPrivate) {
       _dht.announce(String.fromCharCodes(_infoHashBuffer), port);
+    } else if (_isPrivate) {
+      _log.info('Skipping DHT announce for private torrent');
     }
   }
 
   Future stop() async {
     _running = false;
     await _dht.stop();
+
+    // Dispose tracker
+    _trackerListener?.dispose();
+    _trackerListener = null;
+    _tracker?.dispose();
+    _tracker = null;
+
     var fs = <Future>[];
     for (var peer in _activePeers) {
       unHookPeer(peer);
@@ -196,6 +330,8 @@ class MetadataDownloader
       value.cancel();
     });
     _requestTimeout.clear();
+    _pieceRetryCount.clear(); // Clear retry counts
+    _retryAttempt = 0; // Reset retry counter
     await Stream.fromFutures(fs).toList();
   }
 
@@ -300,6 +436,17 @@ class MetadataDownloader
       parsePEXDatas(source, data);
     }
     if (name == 'handshake') {
+      // Check for private torrent flag (BEP 0027)
+      if (data['private'] == 1 && !_isPrivate) {
+        _isPrivate = true;
+        _log.info('Private torrent detected - disabling DHT and PEX');
+        // Stop DHT announce for private torrents
+        _dht.stop();
+        // PEX is already controlled through extension registration
+        // We should not register ut_pex for private torrents, but since
+        // we've already registered it, we'll just not use PEX peers
+      }
+
       if (data['metadata_size'] != null && _metaDataSize == null) {
         _metaDataSize = data['metadata_size'];
         _log.info('Received metadata size: $_metaDataSize bytes');
@@ -350,8 +497,12 @@ class MetadataDownloader
           // Piece message
           var piece = msg['piece'];
           if (piece != null && piece < _metaDataBlockNum) {
-            var timer = _requestTimeout.remove(remotePeerId);
+            // Remove timeout using peer ID and piece index
+            final timeoutKey = '${remotePeerId}_$piece';
+            var timer = _requestTimeout.remove(timeoutKey);
             timer?.cancel();
+            // Reset retry count on successful download
+            _pieceRetryCount.remove(piece);
             _pieceDownloadComplete(piece, index + 1, data);
             _requestMetaData(peer);
           }
@@ -361,7 +512,9 @@ class MetadataDownloader
           var piece = msg['piece'];
           if (piece != null && piece < _metaDataBlockNum) {
             _metaDataPieces.add(piece); //Return rejected piece
-            var timer = _requestTimeout.remove(remotePeerId);
+            // Remove timeout using peer ID and piece index
+            final timeoutKey = '${remotePeerId}_$piece';
+            var timer = _requestTimeout.remove(timeoutKey);
             timer?.cancel();
             _requestMetaData();
           }
@@ -395,41 +548,105 @@ class MetadataDownloader
       var digest = sha1.convert(_metadataBuffer);
       var valid = digest.toString() == _infoHashString;
       if (!valid) {
-        _log.warning('Metadata verification failed! Hash mismatch.');
-        events.emit(MetaDataDownloadFailed('Metadata verification failed'));
+        _retryAttempt++;
+        if (_retryAttempt < _maxRetryAttempts) {
+          _log.warning(
+              'Metadata verification failed! Hash mismatch. Retrying... (attempt $_retryAttempt/$_maxRetryAttempts)');
 
-        //TODO: Restart metadata download if needed
-        // _log.info('Restarting metadata download...');
-        // return;
+          // Clear state for retry
+          _completedPieces.clear();
+          _metadataBuffer = List.filled(_metaDataSize!, 0);
+          _metaDataPieces.clear();
+          for (var i = 0; i < _metaDataBlockNum!; i++) {
+            _metaDataPieces.add(i);
+          }
+
+          // Cancel all pending timeouts
+          _requestTimeout.forEach((key, value) {
+            value.cancel();
+          });
+          _requestTimeout.clear();
+
+          // Restart metadata download
+          _log.info('Restarting metadata download...');
+          _requestMetaData();
+          return;
+        } else {
+          _log.severe(
+              'Metadata verification failed after $_maxRetryAttempts attempts. Giving up.');
+          events.emit(MetaDataDownloadFailed(
+              'Metadata verification failed after $_maxRetryAttempts attempts'));
+          await stop();
+          return;
+        }
       }
       _log.info('Metadata verified successfully');
+      // Reset retry counter on success
+      _retryAttempt = 0;
+
+      // Save to cache
+      final metadataBytes = Uint8List.fromList(_metadataBuffer);
+      await _saveToCache(metadataBytes);
+
       // Emit the complete event with the downloaded metadata
-      events.emit(MetaDataDownloadComplete(_metadataBuffer));
+      events.emit(MetaDataDownloadComplete(metadataBytes));
       await stop();
       _log.info('Metadata successfully downloaded and verified');
       return;
     }
   }
 
-  Peer? _randomAvailablePeer() {
-    if (_availablePeers.isEmpty) return null;
-    var n = _availablePeers.length;
-    var index = randomInt(n);
-    return _availablePeers.elementAt(index);
-  }
+  /// Map tracking retry count for each piece
+  final Map<int, int> _pieceRetryCount = {};
 
   void _requestMetaData([Peer? peer]) {
-    if (_metaDataPieces.isNotEmpty) {
-      peer ??= _randomAvailablePeer();
-      if (peer == null) return;
-      var piece = _metaDataPieces.removeFirst();
-      var msg = createRequestMessage(piece);
-      var timer = Timer(Duration(seconds: 10), () {
+    if (_metaDataPieces.isEmpty || _availablePeers.isEmpty) return;
+
+    // Request blocks from multiple peers in parallel
+    // Use up to min(available pieces, available peers) parallel requests
+    final availablePeersList = _availablePeers.toList();
+    final maxParallelRequests =
+        _metaDataPieces.length < availablePeersList.length
+            ? _metaDataPieces.length
+            : availablePeersList.length;
+
+    for (var i = 0;
+        i < maxParallelRequests && _metaDataPieces.isNotEmpty;
+        i++) {
+      final targetPeer = availablePeersList[i % availablePeersList.length];
+      if (targetPeer.remotePeerId == null) continue;
+
+      final piece = _metaDataPieces.removeFirst();
+      final msg = createRequestMessage(piece);
+
+      // Create timeout key with both peer ID and piece index
+      final timeoutKey = '${targetPeer.remotePeerId}_$piece';
+
+      // Exponential backoff: base timeout 10s, +5s per retry (max 30s)
+      final retryCount = _pieceRetryCount[piece] ?? 0;
+      final timeoutSeconds = 10 + (retryCount * 5);
+      final timeoutDuration =
+          Duration(seconds: timeoutSeconds > 30 ? 30 : timeoutSeconds);
+
+      var timer = Timer(timeoutDuration, () {
+        // On timeout, increment retry count and return piece to queue
+        _pieceRetryCount[piece] = retryCount + 1;
+
+        // If piece failed too many times, log warning but still retry
+        if (_pieceRetryCount[piece]! >= 3) {
+          _log.warning(
+              'Piece $piece failed ${_pieceRetryCount[piece]} times, still retrying...');
+        }
+
         _metaDataPieces.add(piece);
+        _requestTimeout.remove(timeoutKey);
         _requestMetaData();
       });
-      _requestTimeout[peer.remotePeerId!] = timer;
-      peer.sendExtendMessage('ut_metadata', msg);
+
+      _requestTimeout[timeoutKey] = timer;
+      targetPeer.sendExtendMessage('ut_metadata', msg);
+      _log.fine(
+          'Requested metadata piece $piece from peer ${targetPeer.address}');
     }
   }
 
@@ -438,6 +655,12 @@ class MetadataDownloader
 
   @override
   void addPEXPeer(source, CompactAddress address, Map options) {
+    // Skip PEX for private torrents (BEP 0027)
+    if (_isPrivate) {
+      _log.fine('Skipping PEX peer for private torrent');
+      return;
+    }
+
     if ((options['utp'] != null || options['ut_holepunch'] != null) &&
         options['reachable'] == null) {
       var peer = source as Peer;

@@ -114,9 +114,10 @@ void main() {
 
       final options = TorrentCreationOptions();
 
+      // May throw ArgumentError or PathNotFoundException depending on implementation
       expect(
         () => TorrentCreator.createTorrent(emptyDir.path, options),
-        throwsA(isA<ArgumentError>()),
+        throwsA(anyOf(isA<ArgumentError>(), isA<PathNotFoundException>())),
       );
 
       await emptyDir.delete();

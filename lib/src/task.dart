@@ -25,6 +25,7 @@ import 'lsd/lsd.dart';
 import 'peer/protocol/peer.dart';
 import 'piece/base_piece_selector.dart';
 import 'peer/swarm/peers_manager.dart';
+import 'piece/web_seed_downloader.dart';
 import 'utils.dart';
 import 'utils/debouncer.dart';
 
@@ -37,11 +38,15 @@ var _log = Logger('TorrentTask');
 
 abstract class TorrentTask with EventsEmittable<TaskEvent> {
   factory TorrentTask.newTask(Torrent metaInfo, String savePath,
-      [bool stream = false]) {
+      [bool stream = false,
+      List<Uri>? webSeeds,
+      List<Uri>? acceptableSources]) {
     return _TorrentTask(
       metaInfo,
       savePath,
       stream: stream,
+      webSeeds: webSeeds,
+      acceptableSources: acceptableSources,
     );
   }
   void startAnnounceUrl(Uri url, Uint8List infoHash);
@@ -116,6 +121,15 @@ abstract class TorrentTask with EventsEmittable<TaskEvent> {
   /// Resume task
   void resume();
 
+  /// Apply selected file indices from magnet link (BEP 0053)
+  /// Sets priority pieces for the specified file indices
+  ///
+  /// Example:
+  /// ```dart
+  /// task.applySelectedFiles([0, 2]); // Only download files at indices 0 and 2
+  /// ```
+  void applySelectedFiles(List<int> fileIndices);
+
   void requestPeersFromDHT();
 
   /// Adding a DHT node usually involves adding the nodes from the torrent file into the DHT network.
@@ -174,6 +188,15 @@ class _TorrentTask
 
   bool stream;
 
+  /// Web seed URLs from magnet link (BEP 0019)
+  final List<Uri> _webSeeds;
+
+  /// Acceptable source URLs from magnet link (BEP 0019)
+  final List<Uri> _acceptableSources;
+
+  /// Web seed downloader for HTTP/FTP seeding
+  WebSeedDownloader? _webSeedDownloader;
+
   /// The maximum size of the disk write cache.
   final int maxWriteBufferSize = MAX_WRITE_BUFFER_SIZE;
 
@@ -213,7 +236,10 @@ class _TorrentTask
   /// Default delay: 300ms (between 250-500ms as recommended)
   Debouncer<StateFileUpdated>? _progressDebouncer;
 
-  _TorrentTask(this._metaInfo, this._savePath, {this.stream = false}) {
+  _TorrentTask(this._metaInfo, this._savePath,
+      {this.stream = false, List<Uri>? webSeeds, List<Uri>? acceptableSources})
+      : _webSeeds = webSeeds ?? [],
+        _acceptableSources = acceptableSources ?? [] {
     _peerId = generatePeerId();
     // Initialize progress debouncer with 300ms delay
     _progressDebouncer = Debouncer<StateFileUpdated>(
@@ -274,6 +300,19 @@ class _TorrentTask
     _fileManager ??= await DownloadFileManager.createFileManager(
         model, savePath, _stateFile!, _pieceManager!.pieces.values.toList());
     _peersManager ??= PeersManager(_peerId, model);
+
+    // Initialize web seed downloader if web seeds are available (BEP 0019)
+    if ((_webSeeds.isNotEmpty || _acceptableSources.isNotEmpty) &&
+        _webSeedDownloader == null) {
+      _webSeedDownloader = WebSeedDownloader(
+        webSeeds: _webSeeds,
+        acceptableSources: _acceptableSources,
+        totalLength: model.length,
+        pieceLength: model.pieceLength,
+      );
+      _log.info(
+          'Initialized web seed downloader with ${_webSeeds.length} web seed(s) and ${_acceptableSources.length} acceptable source(s)');
+    }
 
     return _peersManager!;
   }
@@ -422,6 +461,58 @@ class _TorrentTask
   }
 
   @override
+  void applySelectedFiles(List<int> fileIndices) {
+    if (_fileManager == null || _pieceManager == null) {
+      _log.warning(
+          'Cannot apply selected files: fileManager or pieceManager not initialized');
+      return;
+    }
+
+    if (fileIndices.isEmpty) {
+      _log.warning('No file indices provided');
+      return;
+    }
+
+    // Validate indices
+    final validIndices = fileIndices
+        .where((index) => index >= 0 && index < _metaInfo.files.length)
+        .toList();
+
+    if (validIndices.isEmpty) {
+      _log.warning('No valid file indices provided');
+      return;
+    }
+
+    // Collect all pieces that belong to selected files
+    final priorityPieces = <int>{};
+
+    for (var fileIndex in validIndices) {
+      final file = _metaInfo.files[fileIndex];
+      final startPiece = file.offset ~/ _metaInfo.pieceLength;
+      var endPiece = file.end ~/ _metaInfo.pieceLength;
+      // Adjust endPiece if file.end is exactly on piece boundary
+      if (file.end.remainder(_metaInfo.pieceLength) == 0) {
+        endPiece--;
+      }
+
+      // Add all pieces for this file
+      for (var pieceIndex = startPiece; pieceIndex <= endPiece; pieceIndex++) {
+        if (pieceIndex >= 0 && pieceIndex < _metaInfo.pieces.length) {
+          priorityPieces.add(pieceIndex);
+        }
+      }
+    }
+
+    if (priorityPieces.isNotEmpty) {
+      _pieceManager!.pieceSelector.setPriorityPieces(priorityPieces);
+      _log.info(
+          'Applied selected files (indices: $validIndices) - ${priorityPieces.length} pieces prioritized');
+    } else {
+      _log.warning('No pieces found for selected file indices: $validIndices');
+    }
+  }
+
+  @override
   Future<Map> start() async {
     state = TaskState.running;
     // Incoming peer:
@@ -477,7 +568,18 @@ class _TorrentTask
       ..on<PieceRejected>((event) => null);
     lsdListener?.on<LSDNewPeer>(_processLSDPeerEvent);
     _lsd?.port = _serverSocket?.port;
-    _lsd?.start();
+    try {
+      await _lsd?.start();
+    } catch (e) {
+      // Ignore port conflicts for LSD (port 6771) - it's not critical for functionality
+      if (e is SocketException &&
+          (e.message.contains('Address already in use') ||
+              e.osError?.errorCode == 48)) {
+        _log.warning('LSD port 6771 is already in use, continuing without LSD');
+      } else {
+        rethrow;
+      }
+    }
     _dhtListener = _dht?.createListener();
     _dhtListener?.on<NewPeerEvent>(
         (event) => _processDHTPeer(event.address, event.infoHash));
@@ -500,9 +602,61 @@ class _TorrentTask
     var piece = _pieceManager?[index];
     if (piece == null) return;
 
+    // Try web seed if no peers available (BEP 0019)
+    if (piece.availablePeers.isEmpty && _webSeedDownloader != null) {
+      _tryDownloadPieceFromWebSeed(index);
+      return;
+    }
+
     // TODO: still need optimizing for last pieces
     for (var peer in piece.availablePeers) {
       requestPieces(peer, piece.index);
+    }
+  }
+
+  /// Try to download a piece from web seed (BEP 0019)
+  Future<void> _tryDownloadPieceFromWebSeed(int pieceIndex) async {
+    if (_webSeedDownloader == null ||
+        _pieceManager == null ||
+        _fileManager == null) {
+      return;
+    }
+
+    final piece = _pieceManager![pieceIndex];
+    if (piece == null || _fileManager!.localHave(pieceIndex)) {
+      return;
+    }
+
+    // Calculate piece offset and size
+    final pieceOffset = piece.offset;
+    final pieceSize = piece.byteLength;
+
+    try {
+      _log.fine('Attempting to download piece $pieceIndex from web seed');
+      final data = await _webSeedDownloader!.downloadPiece(
+        pieceIndex,
+        pieceOffset,
+        pieceSize,
+      );
+
+      if (data != null && data.length == pieceSize) {
+        // Process the downloaded piece as if it came from a peer
+        // Write it in blocks to match the normal flow
+        final blockSize = DEFAULT_REQUEST_LENGTH;
+        for (var begin = 0; begin < pieceSize; begin += blockSize) {
+          final end =
+              (begin + blockSize < pieceSize) ? begin + blockSize : pieceSize;
+          final block = data.sublist(begin, end);
+          _pieceManager!.processReceivedBlock(pieceIndex, begin, block);
+        }
+
+        _log.info('Successfully downloaded piece $pieceIndex from web seed');
+      } else {
+        _log.warning(
+            'Failed to download piece $pieceIndex from web seed: invalid data');
+      }
+    } catch (e) {
+      _log.warning('Error downloading piece $pieceIndex from web seed: $e');
     }
   }
 
@@ -693,7 +847,7 @@ class _TorrentTask
         } else {
           // not choking us, add the peer to the piece and request below
           canRequest = true;
-          pieceManager![index]?.addAvailablePeer(event.peer);
+          _pieceManager![index]?.addAvailablePeer(event.peer);
         }
       }
     }
@@ -768,7 +922,13 @@ class _TorrentTask
     // at this point we have a piece that we know is:
     // - available in the peer
     // - have subPieces
-    if (piece == null) return;
+    if (piece == null) {
+      // If no piece available from peers, try web seed (BEP 0019)
+      if (pieceIndex != -1 && _webSeedDownloader != null) {
+        _tryDownloadPieceFromWebSeed(pieceIndex);
+      }
+      return;
+    }
 
     var subIndex = piece.popSubPiece();
     if (subIndex == null) return;
@@ -826,6 +986,10 @@ class _TorrentTask
     _peerIds.clear();
     _comingIp.clear();
     _streamingServer?.stop();
+
+    // Dispose web seed downloader
+    _webSeedDownloader?.dispose();
+    _webSeedDownloader = null;
 
     state = TaskState.stopped;
     return;
