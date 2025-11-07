@@ -18,7 +18,7 @@ void main(List<String> args) async {
   print('');
 
   String? torrentPath;
-  
+
   // Check if torrent path provided as argument
   if (args.isNotEmpty) {
     torrentPath = args[0];
@@ -27,9 +27,10 @@ void main(List<String> args) async {
     final possiblePaths = [
       path.join(Directory.current.path, 'test.torrent'),
       path.join(Directory.current.path, 'tmp', 'test.torrent'),
-      path.join(Directory.current.path, '..', 'torrents', 'big-buck-bunny.torrent'),
+      path.join(
+          Directory.current.path, '..', 'torrents', 'big-buck-bunny.torrent'),
     ];
-    
+
     for (final p in possiblePaths) {
       if (await File(p).exists()) {
         torrentPath = p;
@@ -132,7 +133,8 @@ void main(List<String> args) async {
           'Speed: $downloadSpeed KB/s');
 
       if (downloadedDelta > 0) {
-        print('✓ Downloading: +${(downloadedDelta / 1024).toStringAsFixed(2)} KB');
+        print(
+            '✓ Downloading: +${(downloadedDelta / 1024).toStringAsFixed(2)} KB');
       } else if (connectedPeers > 0) {
         if (peersDelta > 0) {
           print('  +$peersDelta new peer(s)');
@@ -175,10 +177,11 @@ void main(List<String> args) async {
     final finalAll = task.allPeersNumber;
     final finalDownloaded = task.downloaded ?? 0;
     final finalProgress = task.progress;
-    
+
     print('Connected peers: $finalConnected');
     print('Total peers: $finalAll');
-    print('Downloaded: ${(finalDownloaded / 1024 / 1024).toStringAsFixed(2)} MB');
+    print(
+        'Downloaded: ${(finalDownloaded / 1024 / 1024).toStringAsFixed(2)} MB');
     print('Progress: ${(finalProgress * 100).toStringAsFixed(2)}%');
 
     if (hasReceivedData) {
@@ -201,4 +204,3 @@ void main(List<String> args) async {
     exit(1);
   }
 }
-

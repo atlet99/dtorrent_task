@@ -7,19 +7,30 @@ import 'package:dtorrent_common/dtorrent_common.dart';
 import 'package:dtorrent_parser/dtorrent_parser.dart';
 import 'package:dtorrent_task_v2/dtorrent_task_v2.dart';
 import 'package:dtorrent_tracker/dtorrent_tracker.dart';
+import 'package:events_emitter2/events_emitter2.dart';
 import 'package:logging/logging.dart';
 import 'package:path/path.dart' as path;
 
 /// Test script for issue #4 using magnet link
 /// This will download metadata first, then start the actual download
 void main(List<String> args) async {
-  Logger.root.level = Level.INFO;
+  // Reduce logging noise
+  Logger.root.level = Level.WARNING;
   Logger.root.onRecord.listen((record) {
-    print('[${record.level.name}] ${record.message}');
+    // Only show warnings and errors
+    if (record.level >= Level.WARNING) {
+      // Filter out warnings about disposed emitters - these are harmless
+      // and occur when tracker async operations complete after dispose
+      if (record.message.contains('failed to emit event') &&
+          record.message.contains('disposed emitter')) {
+        return; // Skip these warnings
+      }
+      print('[${record.level.name}] ${record.message}');
+    }
   });
 
   String? magnetUri;
-  
+
   if (args.isNotEmpty) {
     magnetUri = args[0];
   } else {
@@ -45,6 +56,12 @@ void main(List<String> args) async {
   print('Save path: $savePath');
   print('');
 
+  // Declare tracker variables at function scope so they're accessible in catch blocks
+  TorrentAnnounceTracker? tracker;
+  StreamSubscription? trackerSubscription;
+  EventsListener? trackerListener;
+  bool _trackerDisposed = false;
+
   try {
     // Parse magnet link
     final magnet = MagnetParser.parse(magnetUri);
@@ -66,64 +83,151 @@ void main(List<String> args) async {
     print('Starting metadata download...');
     metadata.startDownload();
 
-    // Use public trackers to help find peers
-    final tracker = TorrentAnnounceTracker(metadata);
-    final trackerListener = tracker.createListener();
-    // Convert hex string to bytes
-    final hexStr = magnet.infoHashString;
-    final infoHashBuffer = Uint8List.fromList(
-      List.generate(hexStr.length ~/ 2, (i) {
-        final s = hexStr.substring(i * 2, i * 2 + 2);
-        return int.parse(s, radix: 16);
-      }),
-    );
+    try {
+      tracker = TorrentAnnounceTracker(metadata);
+      trackerListener = tracker.createListener();
+      // Convert hex string to bytes
+      final hexStr = magnet.infoHashString;
+      final infoHashBuffer = Uint8List.fromList(
+        List.generate(hexStr.length ~/ 2, (i) {
+          final s = hexStr.substring(i * 2, i * 2 + 2);
+          return int.parse(s, radix: 16);
+        }),
+      );
 
-    // Add peers from tracker
-    trackerListener.on<AnnouncePeerEventEvent>((event) {
-      if (event.event == null) return;
-      final peers = event.event!.peers;
-      for (var peer in peers) {
-        metadata.addNewPeerAddress(peer, PeerSource.tracker);
-      }
-    });
+      // Add peers from tracker
+      trackerListener.on<AnnouncePeerEventEvent>((event) {
+        // Check if tracker is disposed before processing events
+        if (_trackerDisposed || tracker == null) return;
+        if (event.event == null) return;
+        final peers = event.event!.peers;
+        print('Got ${peers.length} peer(s) from tracker');
+        for (var peer in peers) {
+          if (!_trackerDisposed && tracker != null) {
+            metadata.addNewPeerAddress(peer, PeerSource.tracker);
+          }
+        }
+      });
 
-    // Use public trackers
-    findPublicTrackers().listen((announceUrls) {
-      for (var url in announceUrls) {
-        tracker.runTracker(url, infoHashBuffer);
+      // First, use trackers from magnet link directly
+      if (magnet.trackers.isNotEmpty) {
+        print('Using ${magnet.trackers.length} tracker(s) from magnet link...');
+        for (var trackerUrl in magnet.trackers) {
+          try {
+            tracker.runTracker(trackerUrl, infoHashBuffer);
+            print('  → Announced to: $trackerUrl');
+          } catch (e) {
+            print('  ⚠ Failed to announce to $trackerUrl: $e');
+          }
+        }
       }
-    });
+
+      // Also use public trackers as backup
+      trackerSubscription = findPublicTrackers().timeout(
+        const Duration(seconds: 60),
+        onTimeout: (sink) {
+          print(
+              '⚠ Public trackers timeout, continuing with magnet trackers and DHT...');
+          sink.close();
+        },
+      ).listen((announceUrls) {
+        // Don't add trackers if already disposed
+        if (_trackerDisposed || tracker == null) return;
+        print('Using ${announceUrls.length} public tracker(s)...');
+        for (var url in announceUrls) {
+          try {
+            if (!_trackerDisposed && tracker != null) {
+              tracker!.runTracker(url, infoHashBuffer);
+            }
+          } catch (e) {
+            // Ignore errors for public trackers
+          }
+        }
+      });
+    } catch (e) {
+      print('⚠ Tracker setup failed: $e, continuing with DHT only...');
+    }
 
     // Wait for metadata
-    print('Waiting for metadata download...');
+    print('Waiting for metadata download (max 60 seconds)...');
     final metadataCompleter = Completer<Uint8List>();
-    
+    int lastProgress = 0;
+    int peerCount = 0;
+
+    // Monitor peer connections
+    Timer.periodic(const Duration(seconds: 5), (timer) {
+      final currentPeers = metadata.activePeers.length;
+      if (currentPeers != peerCount) {
+        peerCount = currentPeers;
+        print('Connected peers: $peerCount');
+      }
+    });
+
     metadataListener
       ..on<MetaDataDownloadProgress>((event) {
-        print('Metadata progress: ${(event.progress * 100).toStringAsFixed(1)}%');
+        final progressPercent = (event.progress * 100).toInt();
+        // Show progress when it changes
+        if (progressPercent != lastProgress) {
+          lastProgress = progressPercent;
+          print('Metadata progress: $progressPercent%');
+        }
       })
       ..on<MetaDataDownloadComplete>((event) {
         if (!metadataCompleter.isCompleted) {
+          print('✓ Metadata download complete!');
           metadataCompleter.complete(Uint8List.fromList(event.data));
         }
       });
 
-    final metadataBytes = await metadataCompleter.future.timeout(
-      const Duration(minutes: 5),
-      onTimeout: () {
-        print('ERROR: Metadata download timeout');
-        exit(1);
-      },
-    );
+    Uint8List metadataBytes;
+    try {
+      metadataBytes = await metadataCompleter.future.timeout(
+        const Duration(seconds: 60),
+        onTimeout: () {
+          print('');
+          print('ERROR: Metadata download timeout after 60 seconds');
+          print(
+              'This may be normal if the torrent is not active or has no seeders.');
+          print(
+              'Try using a more popular torrent or provide a .torrent file instead.');
+          // Set flag first to prevent new tracker operations
+          _trackerDisposed = true;
+          trackerSubscription?.cancel();
+          // Dispose listener first to stop receiving events
+          trackerListener?.dispose();
+          trackerListener = null;
+          // Then dispose tracker (this will stop all async operations)
+          tracker?.dispose();
+          tracker = null;
+          exit(1);
+        },
+      );
+    } catch (e) {
+      _trackerDisposed = true;
+      trackerSubscription?.cancel();
+      trackerListener?.dispose();
+      trackerListener = null;
+      await tracker?.dispose();
+      tracker = null;
+      rethrow;
+    }
 
     print('✓ Metadata downloaded!');
-    tracker.stop(true);
+    // Set flag first to prevent new tracker operations
+    _trackerDisposed = true;
+    trackerSubscription?.cancel();
+    // Dispose listener first to stop receiving events
+    trackerListener?.dispose();
+    trackerListener = null;
+    // Then dispose tracker (this will stop all async operations)
+    await tracker?.dispose();
+    tracker = null;
 
     // Parse torrent from metadata
     final msg = decode(metadataBytes);
     final torrentMap = <String, dynamic>{'info': msg};
     final torrentModel = parseTorrentFileContent(torrentMap);
-    
+
     if (torrentModel == null) {
       print('ERROR: Failed to parse torrent from metadata');
       exit(1);
@@ -204,7 +308,8 @@ void main(List<String> args) async {
           'Speed: $downloadSpeed KB/s');
 
       if (downloadedDelta > 0) {
-        print('✓ Downloading: +${(downloadedDelta / 1024).toStringAsFixed(2)} KB');
+        print(
+            '✓ Downloading: +${(downloadedDelta / 1024).toStringAsFixed(2)} KB');
       } else if (connectedPeers > 0) {
         if (peersDelta > 0) {
           print('  +$peersDelta new peer(s)');
@@ -234,8 +339,16 @@ void main(List<String> args) async {
       }
     });
 
-    // Run for 3 minutes
-    await Future.delayed(const Duration(minutes: 3));
+    // Run for 1 minute (enough to test the fix)
+    print('Running test for 1 minute...');
+    print('Press Ctrl+C to stop early');
+    print('');
+
+    try {
+      await Future.delayed(const Duration(minutes: 1));
+    } catch (e) {
+      // Handle interruption
+    }
     timer.cancel();
 
     // Summary
@@ -247,16 +360,18 @@ void main(List<String> args) async {
     final finalAll = task.allPeersNumber;
     final finalDownloaded = task.downloaded ?? 0;
     final finalProgress = task.progress;
-    
+
     print('Connected peers: $finalConnected');
     print('Total peers: $finalAll');
-    print('Downloaded: ${(finalDownloaded / 1024 / 1024).toStringAsFixed(2)} MB');
+    print(
+        'Downloaded: ${(finalDownloaded / 1024 / 1024).toStringAsFixed(2)} MB');
     print('Progress: ${(finalProgress * 100).toStringAsFixed(2)}%');
 
     if (hasReceivedData) {
       print('✓ SUCCESS: Data downloaded! Fix is working.');
       if (firstPeerConnected != null && firstDataReceived != null) {
-        final delay = firstDataReceived!.difference(firstPeerConnected!).inSeconds;
+        final delay =
+            firstDataReceived!.difference(firstPeerConnected!).inSeconds;
         print('✓ Data started ${delay}s after first peer connection');
       }
     } else if (finalConnected >= 12) {
@@ -268,12 +383,40 @@ void main(List<String> args) async {
 
     await task.stop();
     await task.dispose();
+    // Cleanup tracker resources
+    _trackerDisposed = true;
+    trackerSubscription?.cancel();
+    trackerListener?.dispose();
+    trackerListener = null;
+    await tracker?.dispose();
+    tracker = null;
     await metadata.stop();
+  } on TimeoutException catch (e) {
+    print('');
+    print('ERROR: Operation timed out: $e');
+    print('This may be normal if the torrent is not active.');
+    _trackerDisposed = true;
+    trackerSubscription?.cancel();
+    trackerListener?.dispose();
+    trackerListener = null;
+    await tracker?.dispose();
+    tracker = null;
+    exit(1);
   } catch (e, stackTrace) {
     print('');
     print('ERROR: $e');
-    print('Stack trace: $stackTrace');
+    if (e.toString().contains('disposed') ||
+        e.toString().contains('cancelled')) {
+      print('(This may be normal if the process was interrupted)');
+    } else {
+      print('Stack trace: $stackTrace');
+    }
+    _trackerDisposed = true;
+    trackerSubscription?.cancel();
+    trackerListener?.dispose();
+    trackerListener = null;
+    await tracker?.dispose();
+    tracker = null;
     exit(1);
   }
 }
-
