@@ -103,3 +103,45 @@
 - improve uTP congestion control with optimized initial window size
 - add streaming isolate support for better performance during video streaming
 - export magnet parser and torrent creator in public API
+
+## 0.4.4
+- add Base32 infohash support in magnet links (RFC 4648)
+- integrate trackers from magnet links into MetadataDownloader for peer discovery
+- add automatic retry mechanism (up to 3 attempts) when metadata verification fails
+- implement parallel metadata download from multiple peers for faster completion
+- improve timeout handling with exponential backoff (10s base, +5s per retry, max 30s)
+- add TrackerTier class for grouping trackers by tiers (BEP 0012)
+- support parsing numbered tracker parameters (tr.1, tr.2, etc.) as separate tiers
+- announce to trackers tier by tier for better reliability
+- detect private torrent flag in metadata handshake (BEP 0027)
+- automatically disable DHT announce for private torrents
+- block PEX peer exchange for private torrents
+- parse ws (Web Seed) parameter from magnet links (BEP 0019)
+- parse as (Acceptable Source) parameter from magnet links
+- support multiple web seed URLs
+- implement WebSeedDownloader class for HTTP/FTP seeding (BEP 0019)
+- support HTTP Range requests for efficient piece downloading
+- integrate web seed URLs from magnet links into TorrentTask
+- automatic fallback to P2P when web seeds are unavailable
+- support multiple web seed URLs with retry mechanism (max 3 attempts per URL)
+- handle both Partial Content (206) and Full Content (200) HTTP responses
+- proper resource cleanup and HttpClient management
+- web seed download triggered when no peers available for a piece
+- update TorrentTask.newTask() to accept webSeeds and acceptableSources parameters
+- parse so (select only) parameter from magnet links (BEP 0053)
+- add applySelectedFiles() method to TorrentTask for prioritizing selected files
+- add metadata caching to avoid re-downloading metadata for same infohash
+- add configurable cache directory (defaults to system temp + metadata_cache)
+- enhance error handling and logging throughout metadata download process
+- improve timeout management with per-piece retry tracking
+- update example showing all new magnet link features
+- fix magnet parser to properly handle multiple parameters with same key (so, ws, as)
+- improve LSD port conflict handling in TorrentTask.start() to gracefully continue without LSD
+- add early validation for empty piece size in WebSeedDownloader to prevent unnecessary HTTP requests
+- fix PieceManager tests to properly set remote bitfield for peer selection
+- fix PieceManager test for writeComplete to check isCompletelyWritten instead of flushed flag
+- improve streaming isolate tests to handle ReceivePort reuse errors gracefully
+- fix torrent creator tests to accept both ArgumentError and PathNotFoundException for empty directories
+- fix torrent client tests to skip when required torrent file is missing
+- enhance web seeding integration tests with better port conflict detection
+- improve test reliability by handling resource conflicts in parallel test execution

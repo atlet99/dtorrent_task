@@ -12,20 +12,20 @@ The Dart Torrent client consists of several parts:
 This package implements the regular BitTorrent Protocol and manages the above packages to work together for downloading.
 
 ## BEP Support
-- [BEP 0003 The BitTorrent Protocol Specification](http://www.bittorrent.org/beps/bep_0003.html)
-- [BEP 0005 DHT Protocol](http://www.bittorrent.org/beps/bep_0005.html)
-- [BEP 0006 Fast Extension](http://www.bittorrent.org/beps/bep_0006.html)
-- [BEP 0010 Extension Protocol](http://www.bittorrent.org/beps/bep_0010.html)
-- [BEP 0011 Peer Exchange (PEX)](http://www.bittorrent.org/beps/bep_0011.html)
-- [BEP 0014 Local Service Discovery](http://www.bittorrent.org/beps/bep_0014.html)
-- [BEP 0015 UDP Tracker Protocol](http://www.bittorrent.org/beps/bep_0015.html)
-- [BEP 0029 uTorrent transport protocol](http://www.bittorrent.org/beps/bep_0029.html)
-- [BEP 0055 Holepunch extension](http://www.bittorrent.org/beps/bep_0055.html)
-
-Developing:
-- [BEP 0009 Extension for Peers to Send Metadata Files](http://www.bittorrent.org/beps/bep_0009.html)
-
-Other support will come soon.
+- [BEP 0003 The BitTorrent Protocol Specification](https://www.bittorrent.org/beps/bep_0003.html)
+- [BEP 0005 DHT Protocol](https://www.bittorrent.org/beps/bep_0005.html)
+- [BEP 0006 Fast Extension](https://www.bittorrent.org/beps/bep_0006.html)
+- [BEP 0009 Extension for Peers to Send Metadata Files](https://www.bittorrent.org/beps/bep_0009.html)
+- [BEP 0010 Extension Protocol](https://www.bittorrent.org/beps/bep_0010.html)
+- [BEP 0011 Peer Exchange (PEX)](https://www.bittorrent.org/beps/bep_0011.html)
+- [BEP 0012 Multitracker Metadata Extension](https://www.bittorrent.org/beps/bep_0012.html)
+- [BEP 0014 Local Service Discovery](https://www.bittorrent.org/beps/bep_0014.html)
+- [BEP 0015 UDP Tracker Protocol](https://www.bittorrent.org/beps/bep_0015.html)
+- [BEP 0019 HTTP/FTP Seeding (GetRight-style)](https://www.bittorrent.org/beps/bep_0019.html)
+- [BEP 0027 Private Torrents](https://www.bittorrent.org/beps/bep_0027.html)
+- [BEP 0029 uTorrent transport protocol](https://www.bittorrent.org/beps/bep_0029.html)
+- [BEP 0053 Magnet URI extension - Select specific file indices](https://www.bittorrent.org/beps/bep_0053.html)
+- [BEP 0055 Holepunch extension](https://www.bittorrent.org/beps/bep_0055.html)
 
 ## How to use
 

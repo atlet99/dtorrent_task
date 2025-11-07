@@ -60,7 +60,7 @@ void main(List<String> args) async {
   TorrentAnnounceTracker? tracker;
   StreamSubscription? trackerSubscription;
   EventsListener? trackerListener;
-  bool _trackerDisposed = false;
+  bool trackerDisposed = false;
 
   try {
     // Parse magnet link
@@ -74,6 +74,20 @@ void main(List<String> args) async {
     print('  Info hash: ${magnet.infoHashString}');
     print('  Name: ${magnet.displayName ?? "Unknown"}');
     print('  Trackers: ${magnet.trackers.length}');
+    if (magnet.trackerTiers.isNotEmpty) {
+      print('  Tracker tiers: ${magnet.trackerTiers.length}');
+    }
+    if (magnet.webSeeds.isNotEmpty) {
+      print('  Web seeds: ${magnet.webSeeds.length}');
+    }
+    if (magnet.acceptableSources.isNotEmpty) {
+      print('  Acceptable sources: ${magnet.acceptableSources.length}');
+    }
+    if (magnet.selectedFileIndices != null &&
+        magnet.selectedFileIndices!.isNotEmpty) {
+      print(
+          '  Selected files (BEP 0053): ${magnet.selectedFileIndices!.join(", ")}');
+    }
     print('');
 
     // Create metadata downloader
@@ -98,12 +112,12 @@ void main(List<String> args) async {
       // Add peers from tracker
       trackerListener.on<AnnouncePeerEventEvent>((event) {
         // Check if tracker is disposed before processing events
-        if (_trackerDisposed || tracker == null) return;
+        if (trackerDisposed || tracker == null) return;
         if (event.event == null) return;
         final peers = event.event!.peers;
         print('Got ${peers.length} peer(s) from tracker');
         for (var peer in peers) {
-          if (!_trackerDisposed && tracker != null) {
+          if (!trackerDisposed && tracker != null) {
             metadata.addNewPeerAddress(peer, PeerSource.tracker);
           }
         }
@@ -132,11 +146,11 @@ void main(List<String> args) async {
         },
       ).listen((announceUrls) {
         // Don't add trackers if already disposed
-        if (_trackerDisposed || tracker == null) return;
+        if (trackerDisposed || tracker == null) return;
         print('Using ${announceUrls.length} public tracker(s)...');
         for (var url in announceUrls) {
           try {
-            if (!_trackerDisposed && tracker != null) {
+            if (!trackerDisposed && tracker != null) {
               tracker!.runTracker(url, infoHashBuffer);
             }
           } catch (e) {
@@ -191,7 +205,7 @@ void main(List<String> args) async {
           print(
               'Try using a more popular torrent or provide a .torrent file instead.');
           // Set flag first to prevent new tracker operations
-          _trackerDisposed = true;
+          trackerDisposed = true;
           trackerSubscription?.cancel();
           // Dispose listener first to stop receiving events
           trackerListener?.dispose();
@@ -203,7 +217,7 @@ void main(List<String> args) async {
         },
       );
     } catch (e) {
-      _trackerDisposed = true;
+      trackerDisposed = true;
       trackerSubscription?.cancel();
       trackerListener?.dispose();
       trackerListener = null;
@@ -214,7 +228,7 @@ void main(List<String> args) async {
 
     print('✓ Metadata downloaded!');
     // Set flag first to prevent new tracker operations
-    _trackerDisposed = true;
+    trackerDisposed = true;
     trackerSubscription?.cancel();
     // Dispose listener first to stop receiving events
     trackerListener?.dispose();
@@ -236,10 +250,44 @@ void main(List<String> args) async {
     print('Torrent: ${torrentModel.name}');
     print('Size: ${(torrentModel.length / 1024 / 1024).toStringAsFixed(2)} MB');
     print('Pieces: ${torrentModel.pieces.length}');
+    print('Files: ${torrentModel.files.length}');
     print('');
 
     // Now start the actual download
-    final task = TorrentTask.newTask(torrentModel, savePath);
+    // Pass web seeds and acceptable sources from magnet link (BEP 0019)
+    final task = TorrentTask.newTask(
+      torrentModel,
+      savePath,
+      false, // stream
+      magnet.webSeeds.isNotEmpty ? magnet.webSeeds : null,
+      magnet.acceptableSources.isNotEmpty ? magnet.acceptableSources : null,
+    );
+
+    if (magnet.webSeeds.isNotEmpty || magnet.acceptableSources.isNotEmpty) {
+      print('Web seeding enabled:');
+      if (magnet.webSeeds.isNotEmpty) {
+        print('  Web seeds: ${magnet.webSeeds.length}');
+        for (var ws in magnet.webSeeds) {
+          print('    - $ws');
+        }
+      }
+      if (magnet.acceptableSources.isNotEmpty) {
+        print('  Acceptable sources: ${magnet.acceptableSources.length}');
+        for (var as in magnet.acceptableSources) {
+          print('    - $as');
+        }
+      }
+      print('');
+    }
+
+    // Apply selected files from magnet link (BEP 0053)
+    if (magnet.selectedFileIndices != null &&
+        magnet.selectedFileIndices!.isNotEmpty) {
+      print(
+          'Applying selected files from magnet link: ${magnet.selectedFileIndices!.join(", ")}');
+      task.applySelectedFiles(magnet.selectedFileIndices!);
+      print('');
+    }
 
     // Track metrics
     int lastDownloaded = 0;
@@ -384,7 +432,7 @@ void main(List<String> args) async {
     await task.stop();
     await task.dispose();
     // Cleanup tracker resources
-    _trackerDisposed = true;
+    trackerDisposed = true;
     trackerSubscription?.cancel();
     trackerListener?.dispose();
     trackerListener = null;
@@ -395,7 +443,7 @@ void main(List<String> args) async {
     print('');
     print('ERROR: Operation timed out: $e');
     print('This may be normal if the torrent is not active.');
-    _trackerDisposed = true;
+    trackerDisposed = true;
     trackerSubscription?.cancel();
     trackerListener?.dispose();
     trackerListener = null;
@@ -411,7 +459,7 @@ void main(List<String> args) async {
     } else {
       print('Stack trace: $stackTrace');
     }
-    _trackerDisposed = true;
+    trackerDisposed = true;
     trackerSubscription?.cancel();
     trackerListener?.dispose();
     trackerListener = null;
