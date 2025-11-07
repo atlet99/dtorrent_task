@@ -33,7 +33,7 @@ This package requires dependency [`dtorrent_parser`](https://pub.dev/packages/dt
 ```yaml
 dependencies:
   dtorrent_parser: ^1.0.8
-  dtorrent_task_v2: ^0.4.2
+  dtorrent_task_v2: ^0.4.3
 ```
 
 Download from: [DTORRENT_TASK_V2](https://pub.dev/packages/dtorrent_task_v2)
@@ -110,15 +110,19 @@ These metrics help monitor uTP protocol stability and debug RangeError crashes, 
   - Integer overflow protection in calculations
   - Detailed error tracking and metrics
   - Extensive test coverage (stress tests, reordering, extreme values, long sessions)
+- **Critical Bug Fixes**: Fixed race condition in bitfield processing that prevented downloads from starting (see [issue #4](https://github.com/atlet99/dtorrent_task_v2/issues/4))
 
 ### Protocol Support
 - Full BitTorrent protocol implementation
 - uTP (uTorrent transport protocol) support with enhanced stability
 - TCP fallback support
 - Multiple extension protocols (PEX, LSD, Holepunch, Metadata Exchange)
+- Magnet link support via `MagnetParser`
+- Torrent creation via `TorrentCreator`
 
 ### Performance
 - Efficient piece management and selection
 - Memory-optimized file handling
-- Streaming support for media files
-- Congestion control for uTP connections
+- Streaming support for media files with isolate-based processing
+- Optimized congestion control for uTP connections
+- Debounced progress events for reduced UI update frequency
