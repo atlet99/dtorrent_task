@@ -17,6 +17,10 @@ const RECORD_TIME = 5000000;
 /// The maximum number of requests to be increased in each round is 3.
 const MAX_CWND_INCREASE_REQUESTS_PER_RTT = 3 * 16384;
 
+/// Initial congestion window size for uTP (optimized for better performance)
+/// Set to 2.5x DEFAULT_REQUEST_LENGTH (40960 bytes) for faster startup
+const INITIAL_UTP_CWND = 40960; // DEFAULT_REQUEST_LENGTH * 2.5 = 16384 * 2.5
+
 /// LEDBAT Congestion Control
 ///
 /// Note: All time units are in microseconds
@@ -33,6 +37,11 @@ mixin CongestionControl on EventsEmittable<PeerEvent> {
   int _allowWindowSize = DEFAULT_REQUEST_LENGTH;
 
   final List<List<dynamic>> _downloadedHistory = <List<dynamic>>[];
+
+  /// Initialize congestion window for uTP peers with optimized initial value
+  void initializeUtpCwnd() {
+    _allowWindowSize = INITIAL_UTP_CWND;
+  }
 
   /// Update the timeout.
   void updateRTO(int rtt) {

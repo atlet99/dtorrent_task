@@ -8,6 +8,8 @@ import 'package:dtorrent_task_v2/dtorrent_task_v2.dart';
 import 'package:logging/logging.dart';
 import 'package:mime/mime.dart';
 
+import 'streaming_isolate.dart';
+
 class Range {
   int start;
   int end;
@@ -68,6 +70,7 @@ class StreamingServer {
   InternetAddress address = InternetAddress.anyIPv4;
   int port;
   bool running = false;
+  final StreamingIsolateManager _isolateManager = StreamingIsolateManager();
 
   StreamingServer(
     this._fileManager,
@@ -135,14 +138,12 @@ class StreamingServer {
       return;
     }
     if (request.uri.path == "/.m3u" || request.uri.path == "/") {
-      var files = _fileManager.metainfo.files.where((element) {
-        var mimeType = lookupMimeType(element.name);
-        return mimeType?.startsWith('video') ??
-            mimeType?.startsWith('audio') ??
-            false;
-      });
-
-      var buffer = toPlaylist(files).codeUnits;
+      // Process playlist request in isolate to reduce main isolate load
+      var buffer = await _isolateManager.getPlaylist(
+        _fileManager.metainfo.files,
+        address,
+        port,
+      );
 
       request.response.headers.contentType =
           ContentType.parse('application/x-mpegurl; charset=utf-8');
@@ -152,9 +153,16 @@ class StreamingServer {
       return;
     }
     if (request.uri.path == "/.json") {
-      JsonEncoder encoder = JsonEncoder.withIndent('  ');
-      var buffer =
-          encoder.convert(toJson(_fileManager.metainfo.files)).codeUnits;
+      // Process JSON metadata request in isolate to reduce main isolate load
+      var buffer = await _isolateManager.getJsonMetadata(
+        _fileManager.metainfo.files,
+        _fileManager.metainfo.length,
+        _fileManager.downloaded,
+        _torrentTask.averageDownloadSpeed,
+        _torrentTask.averageUploadSpeed,
+        _torrentTask.allPeersNumber,
+        _torrentTask.activePeers?.length ?? 0,
+      );
 
       request.response.headers.contentType =
           ContentType.parse('application/json; charset=utf-8');
@@ -235,5 +243,6 @@ class StreamingServer {
     running = false;
     await _server?.close();
     await _streamSubscription?.cancel();
+    await _isolateManager.dispose();
   }
 }

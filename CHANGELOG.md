@@ -95,3 +95,11 @@
   - utp_reorder_test.dart: packet reordering and burst ACK tests
   - utp_extreme_values_test.dart: extreme value tests (large seq/ack, overflows)
   - utp_long_session_test.dart: long session stability tests
+
+## 0.4.3
+- fix critical bug where downloads don't start despite connected peers (fixes #4)
+- fix race condition in bitfield processing when peer sends unchoke before interested
+- optimize progress event emission with debouncing to reduce UI update frequency
+- improve uTP congestion control with optimized initial window size
+- add streaming isolate support for better performance during video streaming
+- export magnet parser and torrent creator in public API

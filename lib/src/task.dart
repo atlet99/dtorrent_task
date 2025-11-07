@@ -26,6 +26,7 @@ import 'peer/protocol/peer.dart';
 import 'piece/base_piece_selector.dart';
 import 'peer/swarm/peers_manager.dart';
 import 'utils.dart';
+import 'utils/debouncer.dart';
 
 const MAX_PEERS = 50;
 const MAX_IN_PEERS = 10;
@@ -208,8 +209,17 @@ class _TorrentTask
   EventsListener<LSDEvent>? lsdListener;
   EventsListener<DHTEvent>? _dhtListener;
 
+  /// Debouncer for progress events (StateFileUpdated) - reduces UI update frequency
+  /// Default delay: 300ms (between 250-500ms as recommended)
+  Debouncer<StateFileUpdated>? _progressDebouncer;
+
   _TorrentTask(this._metaInfo, this._savePath, {this.stream = false}) {
     _peerId = generatePeerId();
+    // Initialize progress debouncer with 300ms delay
+    _progressDebouncer = Debouncer<StateFileUpdated>(
+      const Duration(milliseconds: 300),
+      (event) => events.emit(event),
+    );
   }
 
   @override
@@ -456,7 +466,10 @@ class _TorrentTask
           (event) => _fileManager?.updateUpload(event.uploaded));
     fileManagerListener
       ?..on<DownloadManagerFileCompleted>(_whenFileDownloadComplete)
-      ..on<StateFileUpdated>((event) => events.emit(StateFileUpdated()))
+      ..on<StateFileUpdated>((event) {
+        // Use debouncer to reduce UI update frequency
+        _progressDebouncer?.call(StateFileUpdated());
+      })
       ..on<SubPieceReadCompleted>((event) => _peersManager
           ?.readSubPieceComplete(event.pieceIndex, event.begin, event.block));
     pieceManagerListener
@@ -617,25 +630,52 @@ class _TorrentTask
   }
 
   void _processBitfieldUpdate(PeerBitfieldEvent bitfieldEvent) {
-    if (_fileManager == null) return;
+    if (_fileManager == null || _pieceManager == null) return;
     if (bitfieldEvent.bitfield != null) {
-      if (bitfieldEvent.peer.interestedRemote) return;
       if (_fileManager!.isAllComplete && bitfieldEvent.peer.isSeeder) {
         bitfieldEvent.peer.dispose(BadException(
             "Do not connect to Seeder if the download is already completed"));
         return;
       }
+
+      // Check if we need any pieces from this peer
+      bool shouldBeInterested = false;
       for (var i = 0; i < _fileManager!.piecesNumber; i++) {
         if (bitfieldEvent.bitfield!.getBit(i)) {
-          if (!bitfieldEvent.peer.interestedRemote &&
-              !_fileManager!.localHave(i)) {
-            bitfieldEvent.peer.sendInterested(true);
-            return;
+          if (!_fileManager!.localHave(i)) {
+            shouldBeInterested = true;
+            break;
           }
         }
       }
+
+      if (shouldBeInterested) {
+        // Send interested if we haven't already
+        if (!bitfieldEvent.peer.interestedRemote) {
+          bitfieldEvent.peer.sendInterested(true);
+        }
+
+        // Check if peer is already unchoked - if so, start requesting immediately
+        // This handles the race condition where peer sends unchoke before we send interested
+        if (!bitfieldEvent.peer.chokeMe) {
+          var completedPieces = bitfieldEvent.peer.remoteCompletePieces;
+          for (var index in completedPieces) {
+            if (_pieceManager![index] != null &&
+                !_fileManager!.localHave(index)) {
+              _pieceManager![index]?.addAvailablePeer(bitfieldEvent.peer);
+            }
+          }
+          // Start requesting if peer is sleeping (has no active requests)
+          if (bitfieldEvent.peer.isSleeping) {
+            Timer.run(() => requestPieces(bitfieldEvent.peer));
+          }
+        }
+      } else {
+        bitfieldEvent.peer.sendInterested(false);
+      }
+    } else {
+      bitfieldEvent.peer.sendInterested(false);
     }
-    bitfieldEvent.peer.sendInterested(false);
   }
 
   void _processHaveUpdate(PeerHaveEvent event) {
@@ -764,6 +804,9 @@ class _TorrentTask
     peersManagerListener?.dispose();
     lsdListener?.dispose();
     _dhtListener?.dispose();
+    // Flush and dispose progress debouncer
+    _progressDebouncer?.flush();
+    _progressDebouncer?.dispose();
     // This is in order, first stop the tracker, then stop listening on the server socket and all peers, finally close the file system.
     await _tracker?.dispose();
     _tracker = null;

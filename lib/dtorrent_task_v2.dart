@@ -8,6 +8,8 @@ export 'src/stream/stream_events.dart';
 export 'src/task_events.dart';
 export 'src/metadata/metadata_downloader.dart';
 export 'src/metadata/metadata_downloader_events.dart';
+export 'src/metadata/magnet_parser.dart';
+export 'src/torrent/torrent_creator.dart';
 
 /// Peer ID prefix
 const ID_PREFIX = '-DT0201-';

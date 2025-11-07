@@ -1518,7 +1518,10 @@ class _UTPPeer extends Peer {
   }) : super(address, infoHashBuffer, piecesNum, source,
             type: PeerType.UTP,
             localEnableExtended: enableExtend,
-            localEnableFastPeer: enableFast);
+            localEnableFastPeer: enableFast) {
+    // Initialize uTP with optimized congestion window for better performance
+    initializeUtpCwnd();
+  }
 
   @override
   Future<Stream<Uint8List>?> connectRemote(int timeout) async {
