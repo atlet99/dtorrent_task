@@ -572,9 +572,9 @@ class _TorrentTask
       await _lsd?.start();
     } catch (e) {
       // Ignore port conflicts for LSD (port 6771) - it's not critical for functionality
-      if (e is SocketException && 
-          (e.message.contains('Address already in use') || 
-           e.osError?.errorCode == 48)) {
+      if (e is SocketException &&
+          (e.message.contains('Address already in use') ||
+              e.osError?.errorCode == 48)) {
         _log.warning('LSD port 6771 is already in use, continuing without LSD');
       } else {
         rethrow;
@@ -847,7 +847,7 @@ class _TorrentTask
         } else {
           // not choking us, add the peer to the piece and request below
           canRequest = true;
-          pieceManager![index]?.addAvailablePeer(event.peer);
+          _pieceManager![index]?.addAvailablePeer(event.peer);
         }
       }
     }

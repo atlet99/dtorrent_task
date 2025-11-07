@@ -145,3 +145,9 @@
 - fix torrent client tests to skip when required torrent file is missing
 - enhance web seeding integration tests with better port conflict detection
 - improve test reliability by handling resource conflicts in parallel test execution
+- fix critical bug: "Invalid message buffer size: length=1" error for messages without payload (choke, unchoke, interested, not interested)
+- fix peer transfer from MetadataDownloader to TorrentTask after metadata download completes
+- transfer active peers from metadata download phase to actual download phase to avoid reconnection delays
+- add trackers from magnet link to TorrentTask to ensure all trackers are used even if not in metadata
+- improve bitfield handling: properly support messages without payload according to BEP 0003
+- enhance test example with comprehensive diagnostics and automatic completion detection

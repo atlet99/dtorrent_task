@@ -33,7 +33,7 @@ This package requires dependency [`dtorrent_parser`](https://pub.dev/packages/dt
 ```yaml
 dependencies:
   dtorrent_parser: ^1.0.8
-  dtorrent_task_v2: ^0.4.3
+  dtorrent_task_v2: ^0.4.4
 ```
 
 Download from: [DTORRENT_TASK_V2](https://pub.dev/packages/dtorrent_task_v2)
@@ -81,6 +81,165 @@ And there are methods to control the `TorrentTask`:
    task.resume();
 ```
 
+## Using Magnet Links
+
+The library supports downloading from magnet links with automatic metadata download:
+
+```dart
+import 'package:dtorrent_task_v2/dtorrent_task_v2.dart';
+
+// Parse magnet link
+final magnet = MagnetParser.parse('magnet:?xt=urn:btih:...');
+if (magnet == null) {
+  print('Invalid magnet URI');
+  return;
+}
+
+// Download metadata first
+final metadata = MetadataDownloader.fromMagnet('magnet:?xt=urn:btih:...');
+final metadataListener = metadata.createListener();
+
+metadataListener
+  ..on<MetaDataDownloadProgress>((event) {
+    print('Metadata progress: ${(event.progress * 100).toInt()}%');
+  })
+  ..on<MetaDataDownloadComplete>((event) {
+    print('Metadata downloaded!');
+    // Parse torrent from metadata
+    final msg = decode(event.data);
+    final torrentMap = <String, dynamic>{'info': msg};
+    final torrentModel = parseTorrentFileContent(torrentMap);
+    
+    if (torrentModel != null) {
+      // Start download with web seeds and selected files from magnet link
+      final task = TorrentTask.newTask(
+        torrentModel,
+        'savepath',
+        false, // stream
+        magnet.webSeeds.isNotEmpty ? magnet.webSeeds : null,
+        magnet.acceptableSources.isNotEmpty ? magnet.acceptableSources : null,
+      );
+      
+      // Apply selected files from magnet link (BEP 0053)
+      if (magnet.selectedFileIndices != null && 
+          magnet.selectedFileIndices!.isNotEmpty) {
+        task.applySelectedFiles(magnet.selectedFileIndices!);
+      }
+      
+      await task.start();
+      
+      // Transfer peers from metadata downloader to avoid reconnection delays
+      final metadataPeers = metadata.activePeers;
+      for (var peer in metadataPeers) {
+        task.addPeer(peer.address, PeerSource.manual, type: peer.type);
+      }
+      
+      // Add trackers from magnet link
+      if (magnet.trackers.isNotEmpty) {
+        final infoHashBuffer = Uint8List.fromList(
+          List.generate(magnet.infoHashString.length ~/ 2, (i) {
+            final s = magnet.infoHashString.substring(i * 2, i * 2 + 2);
+            return int.parse(s, radix: 16);
+          }),
+        );
+        for (var trackerUrl in magnet.trackers) {
+          task.startAnnounceUrl(trackerUrl, infoHashBuffer);
+        }
+      }
+    }
+  });
+
+metadata.startDownload();
+```
+
+## Advanced Features
+
+### Web Seeding (BEP 0019)
+
+The library supports HTTP/FTP seeding from web seed URLs specified in magnet links:
+
+```dart
+// Web seeds are automatically used when no peers are available for a piece
+// They are specified in magnet links with the 'ws' parameter:
+// magnet:?xt=urn:btih:...&ws=http://example.com/file.torrent
+
+final task = TorrentTask.newTask(
+  torrentModel,
+  'savepath',
+  false,
+  [Uri.parse('http://example.com/file.torrent')], // webSeeds
+  null, // acceptableSources
+);
+```
+
+### Selected Files (BEP 0053)
+
+You can download only specific files from a torrent:
+
+```dart
+// Select files by index (0-based)
+task.applySelectedFiles([0, 2, 5]); // Only download files at indices 0, 2, and 5
+
+// This is especially useful with magnet links:
+// magnet:?xt=urn:btih:...&so=0&so=2&so=5
+```
+
+### Monitoring Download Progress
+
+You can monitor detailed download progress:
+
+```dart
+final listener = task.createListener();
+listener.on<StateFileUpdated>((event) {
+  final downloaded = task.downloaded ?? 0;
+  final progress = task.progress * 100;
+  final connectedPeers = task.connectedPeersNumber;
+  final seederCount = task.seederNumber;
+  final downloadSpeed = task.currentDownloadSpeed;
+  final avgSpeed = task.averageDownloadSpeed;
+  
+  print('Progress: ${progress.toStringAsFixed(2)}%');
+  print('Downloaded: ${(downloaded / 1024 / 1024).toStringAsFixed(2)} MB');
+  print('Peers: $connectedPeers ($seederCount seeders)');
+  print('Speed: ${(downloadSpeed * 1000 / 1024).toStringAsFixed(2)} KB/s');
+  print('Avg: ${(avgSpeed * 1000 / 1024).toStringAsFixed(2)} KB/s');
+});
+```
+
+### Adding Peers Manually
+
+You can add peer addresses manually:
+
+```dart
+import 'package:dtorrent_common/dtorrent_common.dart';
+
+// Add a peer by address
+final peerAddress = CompactAddress(
+  InternetAddress('192.168.1.100'),
+  6881,
+);
+task.addPeer(peerAddress, PeerSource.manual, type: PeerType.TCP);
+
+// Add a peer with existing socket
+task.addPeer(peerAddress, PeerSource.incoming, 
+    type: PeerType.TCP, socket: socket);
+```
+
+### DHT Support
+
+The library includes built-in DHT support for peer discovery:
+
+```dart
+// DHT is automatically enabled in TorrentTask
+// You can add bootstrap nodes:
+for (var node in torrentModel.nodes) {
+  task.addDHTNode(node);
+}
+
+// Or manually request peers from DHT:
+task.requestPeersFromDHT();
+```
+
 ## Monitoring and Error Tracking
 
 The library includes comprehensive error tracking for uTP protocol stability:
@@ -117,8 +276,11 @@ These metrics help monitor uTP protocol stability and debug RangeError crashes, 
 - uTP (uTorrent transport protocol) support with enhanced stability
 - TCP fallback support
 - Multiple extension protocols (PEX, LSD, Holepunch, Metadata Exchange)
-- Magnet link support via `MagnetParser`
+- Magnet link support via `MagnetParser` with automatic metadata download
 - Torrent creation via `TorrentCreator`
+- Web seeding (HTTP/FTP) support (BEP 0019)
+- Selected file download (BEP 0053)
+- Private torrent support (BEP 0027) with automatic DHT/PEX disabling
 
 ### Performance
 - Efficient piece management and selection
@@ -126,3 +288,15 @@ These metrics help monitor uTP protocol stability and debug RangeError crashes, 
 - Streaming support for media files with isolate-based processing
 - Optimized congestion control for uTP connections
 - Debounced progress events for reduced UI update frequency
+- Automatic peer transfer from metadata download to actual download
+- Metadata caching to avoid re-downloading
+- Parallel metadata download from multiple peers
+
+### Magnet Link Features
+- Automatic metadata download from magnet links
+- Support for Base32 and hex infohash formats (RFC 4648)
+- Tracker tier support (BEP 0012) with tier-by-tier announcement
+- Web seed URL parsing and integration (BEP 0019)
+- Acceptable source URL support
+- Selected file indices parsing (BEP 0053)
+- Automatic peer and tracker transfer from metadata phase to download phase
