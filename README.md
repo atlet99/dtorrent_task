@@ -24,6 +24,7 @@ This package implements the regular BitTorrent Protocol and manages the above pa
 - [BEP 0019 HTTP/FTP Seeding (GetRight-style)](https://www.bittorrent.org/beps/bep_0019.html)
 - [BEP 0027 Private Torrents](https://www.bittorrent.org/beps/bep_0027.html)
 - [BEP 0029 uTorrent transport protocol](https://www.bittorrent.org/beps/bep_0029.html)
+- [BEP 0040 Canonical Peer Priority](https://www.bittorrent.org/beps/bep_0040.html)
 - [BEP 0053 Magnet URI extension - Select specific file indices](https://www.bittorrent.org/beps/bep_0053.html)
 - [BEP 0055 Holepunch extension](https://www.bittorrent.org/beps/bep_0055.html)
 
@@ -33,7 +34,7 @@ This package requires dependency [`dtorrent_parser`](https://pub.dev/packages/dt
 ```yaml
 dependencies:
   dtorrent_parser: ^1.0.8
-  dtorrent_task_v2: ^0.4.4
+  dtorrent_task_v2: ^0.4.5
 ```
 
 Download from: [DTORRENT_TASK_V2](https://pub.dev/packages/dtorrent_task_v2)
@@ -182,6 +183,76 @@ task.applySelectedFiles([0, 2, 5]); // Only download files at indices 0, 2, and 
 
 // This is especially useful with magnet links:
 // magnet:?xt=urn:btih:...&so=0&so=2&so=5
+```
+
+### Sequential Download for Streaming (NEW in 0.4.5)
+
+The library now supports advanced sequential download optimized for video/audio streaming:
+
+```dart
+import 'package:dtorrent_task_v2/dtorrent_task_v2.dart';
+
+// Create sequential configuration
+final config = SequentialConfig.forVideoStreaming();
+
+// Create task with streaming enabled
+final task = TorrentTask.newTask(
+  torrent,
+  savePath,
+  true, // Enable streaming mode
+  null, // webSeeds
+  null, // acceptableSources  
+  config, // Sequential configuration
+);
+
+await task.start();
+
+// Update playback position during seek operations
+task.setPlaybackPosition(seekPositionInBytes);
+
+// Get streaming statistics
+final stats = task.getSequentialStats();
+if (stats != null) {
+  print('Buffer health: ${stats.bufferHealth}%');
+  print('Strategy: ${stats.currentStrategy.name}');
+  print('Buffered pieces: ${stats.bufferedPieces}');
+}
+```
+
+**Sequential Configuration Options:**
+
+```dart
+// Video streaming (optimized for MP4/MKV)
+final videoConfig = SequentialConfig.forVideoStreaming();
+
+// Audio streaming (optimized for MP3/FLAC)
+final audioConfig = SequentialConfig.forAudioStreaming();
+
+// Minimal configuration
+final minimalConfig = SequentialConfig.minimal();
+
+// Custom configuration
+final customConfig = SequentialConfig(
+  lookAheadSize: 20,              // Buffer 20 pieces ahead
+  criticalZoneSize: 10 * 1024 * 1024, // 10MB critical zone
+  adaptiveStrategy: true,          // Auto-switch strategies
+  autoDetectMoovAtom: true,       // Prioritize moov atom for MP4
+  seekLatencyTolerance: 1,        // 1 second seek tolerance
+  enablePeerPriority: true,       // BEP 40 peer priority
+  enableFastResumption: true,     // BEP 53 fast resumption
+);
+```
+
+**Features:**
+- **Look-ahead buffer**: Downloads pieces ahead of playback position
+- **Adaptive strategy**: Automatically switches between sequential and rarest-first
+- **Moov atom detection**: Prioritizes MP4 metadata for faster playback start
+- **Seek support**: Fast priority rebuilding on seek operations
+- **Buffer health monitoring**: Real-time streaming quality metrics
+- **BEP 40 integration**: Peer prioritization for sequential pieces
+- **BEP 53 support**: Efficient partial piece resumption
+
+See `example/sequential_streaming_example.dart` for complete examples.
 ```
 
 ### Monitoring Download Progress
