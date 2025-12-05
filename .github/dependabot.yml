@@ -1,0 +1,32 @@
+version: 2
+updates:
+  # Enable version updates for pub (Dart/Flutter)
+  - package-ecosystem: "pub"
+    # Look for `pubspec.yaml` in the root directory
+    directory: "/"
+    # Check for updates daily
+    schedule:
+      interval: "daily"
+      time: "09:00"
+      timezone: "Asia/Tashkent"
+    # Limit the number of open pull requests for version updates
+    open-pull-requests-limit: 10
+    # Add labels to pull requests
+    labels:
+      - "dependencies"
+      - "dart"
+    # Group all patch and minor updates together
+    groups:
+      minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    # Allow both direct and indirect dependencies
+    allow:
+      - dependency-type: "all"
+    # Commit message prefix
+    commit-message:
+      prefix: "chore"
+      include: "scope"
