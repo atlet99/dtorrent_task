@@ -13,6 +13,10 @@ import 'package:dtorrent_task_v2/src/piece/piece_manager_events.dart';
 import 'package:dtorrent_task_v2/src/peer/protocol/peer_events.dart'
     as peer_events;
 import 'package:dtorrent_task_v2/src/piece/sequential_piece_selector.dart';
+import 'package:dtorrent_task_v2/src/piece/piece_selector.dart';
+import 'package:dtorrent_task_v2/src/piece/sequential_config.dart';
+import 'package:dtorrent_task_v2/src/piece/sequential_stats.dart';
+import 'package:dtorrent_task_v2/src/piece/advanced_sequential_selector.dart';
 import 'package:dtorrent_task_v2/src/task_events.dart';
 import 'package:dtorrent_tracker/dtorrent_tracker.dart';
 import 'package:dtorrent_common/dtorrent_common.dart';
@@ -40,13 +44,15 @@ abstract class TorrentTask with EventsEmittable<TaskEvent> {
   factory TorrentTask.newTask(Torrent metaInfo, String savePath,
       [bool stream = false,
       List<Uri>? webSeeds,
-      List<Uri>? acceptableSources]) {
+      List<Uri>? acceptableSources,
+      SequentialConfig? sequentialConfig]) {
     return _TorrentTask(
       metaInfo,
       savePath,
       stream: stream,
       webSeeds: webSeeds,
       acceptableSources: acceptableSources,
+      sequentialConfig: sequentialConfig,
     );
   }
   void startAnnounceUrl(Uri url, Uint8List infoHash);
@@ -146,6 +152,20 @@ abstract class TorrentTask with EventsEmittable<TaskEvent> {
     int? endPosition,
     String? fileName,
   });
+
+  /// Set current playback position for sequential download optimization
+  ///
+  /// This method updates the priority pieces based on the current playback
+  /// position, ensuring smooth streaming during seek operations.
+  ///
+  /// [bytePosition] - Current playback position in bytes
+  void setPlaybackPosition(int bytePosition);
+
+  /// Get sequential download statistics
+  ///
+  /// Returns metrics including buffer health, time to first byte,
+  /// download strategy, and seek statistics.
+  SequentialStats? getSequentialStats();
 }
 
 class _TorrentTask
@@ -197,6 +217,12 @@ class _TorrentTask
   /// Web seed downloader for HTTP/FTP seeding
   WebSeedDownloader? _webSeedDownloader;
 
+  /// Sequential download configuration
+  final SequentialConfig? _sequentialConfig;
+
+  /// Advanced sequential piece selector (when streaming with config)
+  AdvancedSequentialPieceSelector? _advancedSelector;
+
   /// The maximum size of the disk write cache.
   final int maxWriteBufferSize = MAX_WRITE_BUFFER_SIZE;
 
@@ -237,9 +263,13 @@ class _TorrentTask
   Debouncer<StateFileUpdated>? _progressDebouncer;
 
   _TorrentTask(this._metaInfo, this._savePath,
-      {this.stream = false, List<Uri>? webSeeds, List<Uri>? acceptableSources})
+      {this.stream = false,
+      List<Uri>? webSeeds,
+      List<Uri>? acceptableSources,
+      SequentialConfig? sequentialConfig})
       : _webSeeds = webSeeds ?? [],
-        _acceptableSources = acceptableSources ?? [] {
+        _acceptableSources = acceptableSources ?? [],
+        _sequentialConfig = sequentialConfig {
     _peerId = generatePeerId();
     // Initialize progress debouncer with 300ms delay
     _progressDebouncer = Debouncer<StateFileUpdated>(
@@ -293,10 +323,44 @@ class _TorrentTask
     _infoHashString ??= String.fromCharCodes(model.infoHashBuffer);
     _tracker ??= TorrentAnnounceTracker(this);
     _stateFile ??= await StateFile.getStateFile(savePath, model);
-    _pieceManager ??= PieceManager.createPieceManager(
-        stream ? SequentialPieceSelector() : BasePieceSelector(),
+
+    // Initialize piece manager with appropriate selector
+    if (_pieceManager == null) {
+      PieceSelector selector;
+
+      if (stream && _sequentialConfig != null) {
+        // Use advanced sequential selector with configuration
+        final advancedSelector =
+            AdvancedSequentialPieceSelector(_sequentialConfig!);
+        advancedSelector.initialize(model.pieces.length, model.pieceLength);
+
+        // Auto-detect moov atom if enabled
+        if (_sequentialConfig!.autoDetectMoovAtom) {
+          advancedSelector.detectAndSetMoovAtom(
+              model.length, model.pieceLength);
+        }
+
+        _advancedSelector = advancedSelector;
+        selector = advancedSelector;
+        _log.info(
+            'Using AdvancedSequentialPieceSelector with config: $_sequentialConfig');
+      } else if (stream) {
+        // Use basic sequential selector
+        selector = SequentialPieceSelector();
+        _log.info('Using basic SequentialPieceSelector');
+      } else {
+        // Use rarest-first selector
+        selector = BasePieceSelector();
+        _log.info('Using BasePieceSelector (rarest-first)');
+      }
+
+      _pieceManager = PieceManager.createPieceManager(
+        selector,
         model,
-        _stateFile!.bitfield);
+        _stateFile!.bitfield,
+      );
+    }
+
     _fileManager ??= await DownloadFileManager.createFileManager(
         model, savePath, _stateFile!, _pieceManager!.pieces.values.toList());
     _peersManager ??= PeersManager(_peerId, model);
@@ -372,6 +436,30 @@ class _TorrentTask
 
     return stream;
   }
+
+  @override
+  void setPlaybackPosition(int bytePosition) {
+    if (_advancedSelector == null || _pieceLength == null) {
+      _log.warning(
+          'Cannot set playback position: advanced selector not initialized');
+      return;
+    }
+
+    _advancedSelector!.setPlaybackPosition(bytePosition, _pieceLength!);
+    _log.fine(
+        'Playback position set to: ${(bytePosition / 1024 / 1024).toStringAsFixed(2)} MB');
+  }
+
+  @override
+  SequentialStats? getSequentialStats() {
+    if (_advancedSelector == null || _pieceManager == null) {
+      return null;
+    }
+
+    return _advancedSelector!.getStats(_pieceManager!);
+  }
+
+  int? get _pieceLength => _metaInfo.pieceLength;
 
   @override
   void addPeer(CompactAddress address, PeerSource source,

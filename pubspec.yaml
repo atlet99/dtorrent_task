@@ -1,6 +1,6 @@
 name: dtorrent_task_v2
 description: BitTorrent download client package written by pure Dart language.
-version: 0.4.4
+version: 0.4.5
 repository: https://github.com/atlet99/dtorrent_task_v2
 issue_tracker: https://github.com/atlet99/dtorrent_task_v2/issues
 
@@ -21,6 +21,7 @@ dependencies:
   crypto: ^3.0.6
   args: ^2.7.0
   logging: ^1.2.0
+  http: ^1.6.0
 
 dev_dependencies:
   lints: ^6.0.0

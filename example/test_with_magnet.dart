@@ -855,7 +855,7 @@ void main(List<String> args) async {
         downloadCompleted.future,
         Future.delayed(const Duration(minutes: 2)),
       ]);
-      
+
       // If download completed, wait a bit more to show final stats
       if (downloadCompleted.isCompleted) {
         print('');
